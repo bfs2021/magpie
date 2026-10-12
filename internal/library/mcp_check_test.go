@@ -51,6 +51,15 @@ func TestFakeMCPServer(t *testing.T) {
 		c.Start()
 		time.Sleep(time.Minute)
 		os.Exit(0)
+	case "touchcwd":
+		// a server that writes into its own working directory: it dies under
+		// an unwritable inherited cwd and works once the check gives the
+		// child a home (#1727)
+		if err := os.WriteFile("magpie-fake-touchcwd", []byte("x"), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("wrote into cwd")
 	}
 	// ok: a log line on stdout first, as some servers write
 	fmt.Println("server starting on stdio")
@@ -125,6 +134,34 @@ func TestCheckStdio(t *testing.T) {
 		if h.State != "error" || h.Why != "notfound" || h.Detail != "magpie-no-such-mcp-server" {
 			t.Fatalf("got %+v, want notfound", h)
 		}
+	})
+	t.Run("runs in the user's working directory, not magpie's", func(t *testing.T) {
+		// A server that writes into its own cwd works when the check gives
+		// the child a home (#1727): magpie launched from the Start menu
+		// inherits C:\Windows\system32, where the child would die on its
+		// first write. Drive the child's cwd by temporarily moving this
+		// test's own process to a directory the child must not inherit.
+		dir := t.TempDir()
+		orig, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chdir(dir); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chdir(orig) })
+		h := CheckServer(context.Background(), fakeStdio(t, "touchcwd", nil))
+		if h.State != "ok" {
+			t.Fatalf("got %+v, want ok: the child must not run in the checker's cwd", h)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "magpie-fake-touchcwd")); !os.IsNotExist(err) {
+			t.Error("the child ran in the checker's cwd; it should run in the user's home")
+		}
+		home := userWorkingDir()
+		if _, err := os.Stat(filepath.Join(home, "magpie-fake-touchcwd")); err != nil {
+			t.Errorf("the child's cwd write is missing at %s: %v", home, err)
+		}
+		t.Cleanup(func() { os.Remove(filepath.Join(home, "magpie-fake-touchcwd")) })
 	})
 	t.Run("timeout ends the tree", func(t *testing.T) {
 		short(t, 1500*time.Millisecond)

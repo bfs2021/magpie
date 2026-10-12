@@ -409,9 +409,25 @@ func (t *tail) last() string {
 	return l
 }
 
+// userWorkingDir is the directory a server check runs in: the user's home,
+// falling back to the temp directory when the home cannot be resolved (the
+// agents likewise start servers in a project or the home, never in whatever
+// directory magpie itself was launched from).
+func userWorkingDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
+	}
+	return os.TempDir()
+}
+
 func checkStdio(ctx context.Context, s *Server) ServerHealth {
 	// started as the agents start it: in the environment magpie has, with
-	// the server's own variables over it
+	// the server's own variables over it, and in a directory the server may
+	// write to. Without an explicit Dir the child inherits magpie's own
+	// working directory — C:\Windows\system32 when magpie was launched from
+	// the Start menu — where a server that logs or caches into its cwd dies
+	// on its first write with permission denied (#1727). The agents start
+	// servers in a project or the home directory, never there.
 	env, unset := expandAll(s.Env)
 	if len(unset) > 0 {
 		return failed("novar", strings.Join(unset, ", "))
@@ -421,6 +437,7 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	cmd.Dir = userWorkingDir()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return failed("start", err.Error())
